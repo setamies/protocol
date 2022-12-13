@@ -148,3 +148,11 @@ AETHcCollateral has a deployment script in the [task](/tasks/deployment/collater
       at listOnTimeout (node:internal/timers:528:9)
       at processTimers (node:internal/timers:502:7)
 ```
+
+NOTE: Both of these AssertionErrors stem from gnosis. Here is the code snippet where `Broker.test.ts` throws the error:
+```
+  describe('Deployment', () => {
+    it('Should setup Broker correctly', async () => {
+      expect(await broker.gnosis()).to.equal(gnosis.address)
+
+```
