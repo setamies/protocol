@@ -67,7 +67,7 @@ Unstaking is unavailable before the [Shanghai update](https://www.ankr.com/docs/
   - No warnings regarding aETHc.
 
 * Integration test:
-  - AETHc integration test can be found from: [/test/integration/individual-collateral/AETHcCollateral.test.ts]
+  - AETHc integration test can be found from: [AETHcCollateral.test.ts](https://github.com/setamies/protocol/blob/master/test/integration/individual-collateral/AETHcCollateral.test.ts)
   - To run the test: `yarn test:integration`
   - Result:  
 ```
@@ -76,7 +76,7 @@ Unstaking is unavailable before the [Shanghai update](https://www.ankr.com/docs/
 ```
 
 * Collateral test:
-  - AETHc collateral test can be found from: [/test/plugins/Collateral.test.ts]
+  - AETHc collateral test can be found from: [Collateral.test.ts](https://github.com/setamies/protocol/blob/master/test/plugins/Collateral.test.ts)
   - To run the test: `yarn test:fast`
   - Result:   
 ```
