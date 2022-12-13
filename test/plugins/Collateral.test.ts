@@ -27,6 +27,9 @@ import {
   TestIRToken,
   USDCMock,
   WETH9,
+  AETHcMock,
+  AETHcCollateral,
+  AETHcCollateral__factory,
 } from '../../typechain'
 import { advanceTime, getLatestBlockTimestamp, setNextBlockTimestamp } from '../utils/time'
 import snapshotGasCost from '../utils/snapshotGasCost'
@@ -1777,6 +1780,164 @@ describe('Collateral contracts', () => {
       await invalidChainlinkFeed.setSimplyRevert(false)
       await expect(invalidEURFiatCollateral.refresh()).to.be.revertedWith('')
       expect(await invalidEURFiatCollateral.status()).to.equal(CollateralStatus.SOUND)
+    })
+  })
+
+  // Tests specific to aETHcCollateral.sol contract, not used by default in fixture
+  describe('aETHc Collateral #fast', () => {
+    let aETHc: AETHcMock
+    let aETHcCollateral: AETHcCollateral
+    let AETHcCollateralFactory: AETHcCollateral__factory
+    let chainlinkFeed: MockV3Aggregator
+
+    beforeEach(async () => {
+      chainlinkFeed = <MockV3Aggregator>(
+        await (await ethers.getContractFactory('MockV3Aggregator')).deploy(18, fp('1000'))
+      )
+
+      aETHc = await (await ethers.getContractFactory('AETHcMock')).deploy()
+
+      AETHcCollateralFactory = await ethers.getContractFactory('AETHcCollateral', {
+        libraries: { OracleLib: oracleLib.address },
+      })
+
+      aETHcCollateral = <AETHcCollateral>(
+        await AETHcCollateralFactory.deploy(
+          fp('1'),
+          chainlinkFeed.address,
+          aETHc.address,
+          config.rTokenMaxTradeVolume,
+          ORACLE_TIMEOUT,
+          ethers.utils.formatBytes32String('ETH'),
+          DELAY_UNTIL_DEFAULT
+        )
+      )
+
+      // Mint some tokens
+      await aETHc.connect(owner).mint(owner.address, amt)
+    })
+
+    // underlying token is ETH --> No need to test default threshold
+
+    it('Should not allow missing delayUntilDefault', async () => {
+      await expect(
+        AETHcCollateralFactory.deploy(
+          fp('1'),
+          chainlinkFeed.address,
+          aETHc.address,
+          config.rTokenMaxTradeVolume,
+          ORACLE_TIMEOUT,
+          ethers.utils.formatBytes32String('ETH'),
+          bn(0)
+        )
+      ).to.be.revertedWith('delayUntilDefault zero')
+    })
+
+    it('Should not allow missing ETH chainlink feed', async () => {
+      await expect(
+        AETHcCollateralFactory.deploy(
+          fp('1'),
+          ZERO_ADDRESS,
+          aETHc.address,
+          config.rTokenMaxTradeVolume,
+          ORACLE_TIMEOUT,
+          ethers.utils.formatBytes32String('ETH'),
+          DELAY_UNTIL_DEFAULT
+        )
+      ).to.be.revertedWith('missing chainlink feed')
+    })
+
+    // {ref} = {target} = ETH --> No need to test targetPerRefFeed
+
+    it('Should setup collateral correctly', async function () {
+      // Non-Fiat Token
+      expect(await aETHcCollateral.isCollateral()).to.equal(true)
+      expect(await aETHcCollateral.chainlinkFeed()).to.equal(chainlinkFeed.address)
+      expect(await aETHcCollateral.erc20()).to.equal(aETHc.address)
+      expect(await aETHc.decimals()).to.equal(18) // Due to Mock, wbtc has 8 decimals (covered in integration test)
+      expect(await aETHcCollateral.targetName()).to.equal(ethers.utils.formatBytes32String('ETH'))
+
+      // Get priceable info
+      await aETHcCollateral.refresh()
+      expect(await aETHcCollateral.status()).to.equal(CollateralStatus.SOUND)
+      expect(await aETHcCollateral.whenDefault()).to.equal(MAX_UINT256)
+      expect(await aETHcCollateral.delayUntilDefault()).to.equal(DELAY_UNTIL_DEFAULT)
+      expect(await aETHcCollateral.maxTradeVolume()).to.equal(config.rTokenMaxTradeVolume)
+      expect(await aETHcCollateral.oracleTimeout()).to.equal(ORACLE_TIMEOUT)
+      expect(await aETHcCollateral.bal(owner.address)).to.equal(amt)
+      expect(await aETHcCollateral.refPerTok()).to.equal(fp('1'))
+      expect(await aETHcCollateral.targetPerRef()).to.equal(fp('1'))
+      expect(await aETHcCollateral.pricePerTarget()).to.equal(fp('1000'))
+      expect(await aETHcCollateral.strictPrice()).to.equal(fp('1000'))
+      expect(await aETHcCollateral.pricePerTarget()).to.equal(fp('1000'))
+
+      expect(await aETHcCollateral.prevReferencePrice()).to.equal(await aETHcCollateral.refPerTok())
+    })
+
+    it('Should calculate prices correctly', async function () {
+      expect(await aETHcCollateral.strictPrice()).to.equal(fp('1000'))
+
+      // Check refPerTok initial values
+      expect(await aETHcCollateral.refPerTok()).to.equal(fp('1'))
+
+      // Increase rate to double
+      await aETHc.repairRatio(fp(2))
+
+      // Check price doubled
+      expect(await aETHcCollateral.strictPrice()).to.equal(fp('2000'))
+
+      // RefPerTok also doubles in this case
+      expect(await aETHcCollateral.refPerTok()).to.equal(fp('2'))
+
+      // Update values in Oracle increase by 10%
+      await setOraclePrice(aETHcCollateral.address, fp('1100')) // ETH Price increases 10%, refPerTok = 2 -> aETHc price = 2200
+
+      // Check new prices
+      expect(await aETHcCollateral.strictPrice()).to.equal(fp('2200'))
+
+      // Revert if price is zero - Update Oracles and check prices
+      await setOraclePrice(aETHcCollateral.address, bn(0))
+      await expect(aETHcCollateral.strictPrice()).to.be.revertedWith('PriceOutsideRange()')
+
+      // When refreshed, sets status to Unpriced
+      await aETHcCollateral.refresh()
+      expect(await aETHcCollateral.status()).to.equal(CollateralStatus.IFFY)
+    })
+
+    it('Reverts if Chainlink feed reverts or runs out of gas, maintains status', async () => {
+      const invalidChainlinkFeed: InvalidMockV3Aggregator = <InvalidMockV3Aggregator>(
+        await InvalidMockV3AggregatorFactory.deploy(8, bn('1e8'))
+      )
+
+      const invalidAETHcCollateral: AETHcCollateral = await AETHcCollateralFactory.deploy(
+        fp('1'),
+        invalidChainlinkFeed.address,
+        aETHc.address,
+        config.rTokenMaxTradeVolume,
+        ORACLE_TIMEOUT,
+        ethers.utils.formatBytes32String('ETH'),
+        DELAY_UNTIL_DEFAULT
+      )
+
+      // Reverting with no reason
+      await invalidChainlinkFeed.setSimplyRevert(true)
+      await expect(invalidAETHcCollateral.refresh()).to.be.revertedWith('')
+      expect(await invalidAETHcCollateral.status()).to.equal(CollateralStatus.SOUND)
+
+      // Runnning out of gas (same error)
+      await invalidChainlinkFeed.setSimplyRevert(false)
+      await expect(invalidAETHcCollateral.refresh()).to.be.revertedWith('')
+      expect(await invalidAETHcCollateral.status()).to.equal(CollateralStatus.SOUND)
+    })
+    it('Should default immediately if refPerTok() decreases', async () => {
+      expect(await aETHcCollateral.refPerTok()).to.equal(fp('1'))
+
+      // Decrease refPerTok()
+      await aETHc.repairRatio(fp('0.5'))
+
+      // Check if status becomes disabled
+      await aETHcCollateral.refresh()
+      expect(await aETHcCollateral.status()).to.equal(CollateralStatus.DISABLED)
     })
   })
 

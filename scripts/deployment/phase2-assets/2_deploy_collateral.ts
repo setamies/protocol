@@ -606,6 +606,23 @@ async function main() {
   console.log(`Deployed collateral to ${hre.network.name} (${chainId})
     New deployments: ${deployedCollateral}
     Deployment file: ${assetCollDeploymentFilename}`)
+
+  /********  Deploy aETHc Collateral  - aETHc **************************/
+  const { collateral: AETHcCollateral } = await hre.run('deploy-aethc-collateral', {
+    fallbackPrice: (await getCurrentPrice(networkConfig[chainId].chainlinkFeeds.ETH)).toString(),
+    referenceUnitFeed: networkConfig[chainId].chainlinkFeeds.ETH,
+    tokenAddress: networkConfig[chainId].tokens.AETHC,
+    maxTradeVolume: fp('1e6').toString(), // $1m,
+    oracleTimeout: getOracleTimeout(chainId).toString(),
+    targetName: ethers.utils.formatBytes32String('ETH'),
+    delayUntilDefault: bn('86400').toString(), // 24h
+    oracleLib: phase1Deployment.oracleLib,
+  })
+
+  assetCollDeployments.collateral.AETHC = AETHcCollateral
+  deployedCollateral.push(AETHcCollateral.toString())
+
+  fs.writeFileSync(assetCollDeploymentFilename, JSON.stringify(assetCollDeployments, null, 2))
 }
 
 main().catch((error) => {
